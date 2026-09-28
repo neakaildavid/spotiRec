@@ -12,7 +12,7 @@ from typing import Iterator
 import numpy as np
 
 from constellation.models import IndexStatus, NewSong, Song
-from constellation.storage.base import LookupResult
+from constellation.storage.base import SONG_SORT_FIELDS, LookupResult
 
 
 class MemoryStorage:
@@ -47,11 +47,33 @@ class MemoryStorage:
     def get_songs(self, song_ids: list[int]) -> dict[int, Song]:
         return {i: self._songs[i] for i in song_ids if i in self._songs}
 
-    def list_songs(self, limit: int = 100, offset: int = 0) -> list[Song]:
-        return [self._songs[i] for i in sorted(self._songs)][offset : offset + limit]
+    def _filtered(self, query: str | None) -> list[Song]:
+        songs = list(self._songs.values())
+        if query:
+            q = query.lower()
+            songs = [s for s in songs if q in (s.title or "").lower() or q in (s.artist or "").lower()]
+        return songs
 
-    def count_songs(self) -> int:
-        return len(self._songs)
+    def list_songs(
+        self,
+        limit: int = 100,
+        offset: int = 0,
+        query: str | None = None,
+        sort: str = "id",
+        descending: bool = False,
+    ) -> list[Song]:
+        if sort not in SONG_SORT_FIELDS:
+            raise ValueError(f"cannot sort by {sort!r}")
+        songs = self._filtered(query)
+        # Nulls last in both directions, ties broken by id (matches Postgres).
+        present = [s for s in songs if getattr(s, sort) is not None]
+        missing = [s for s in songs if getattr(s, sort) is None]
+        key = lambda s: (str(getattr(s, sort)).lower() if isinstance(getattr(s, sort), str) else getattr(s, sort), s.id)
+        present.sort(key=key, reverse=descending)
+        return (present + sorted(missing, key=lambda s: s.id))[offset : offset + limit]
+
+    def count_songs(self, query: str | None = None) -> int:
+        return len(self._filtered(query))
 
     def random_song(self) -> Song | None:
         return random.choice(list(self._songs.values())) if self._songs else None

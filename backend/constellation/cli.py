@@ -4,6 +4,7 @@
     constellation db stats                     # row counts and on-disk sizes
     constellation ingest data/fma_small --metadata data/fma_metadata/tracks.csv --workers 8
     constellation identify clip.m4a
+    constellation serve --reload               # FastAPI on http://localhost:8000 (docs at /docs)
 """
 
 from __future__ import annotations
@@ -121,6 +122,12 @@ def cmd_identify(args: argparse.Namespace) -> None:
           f"({r.aligned_matches} aligned vs {r.runner_up_matches} runner-up), {ms:.0f} ms")
 
 
+def cmd_serve(args: argparse.Namespace) -> None:
+    import uvicorn
+
+    uvicorn.run("constellation.api.main:app", host=args.host, port=args.port, reload=args.reload)
+
+
 def main(argv: list[str] | None = None) -> None:
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(message)s")
     p = argparse.ArgumentParser(prog="constellation")
@@ -140,6 +147,12 @@ def main(argv: list[str] | None = None) -> None:
     idf = sub.add_parser("identify", help="identify an audio clip")
     idf.add_argument("file")
     idf.set_defaults(func=cmd_identify)
+
+    srv = sub.add_parser("serve", help="run the HTTP API")
+    srv.add_argument("--host", default="127.0.0.1")
+    srv.add_argument("--port", type=int, default=8000)
+    srv.add_argument("--reload", action="store_true")
+    srv.set_defaults(func=cmd_serve)
 
     args = p.parse_args(argv)
     args.func(args)

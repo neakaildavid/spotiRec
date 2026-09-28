@@ -40,13 +40,27 @@ class LookupResult:
         return cls(z, z.copy(), z.copy())
 
 
+SONG_SORT_FIELDS = ("id", "title", "artist", "duration_s", "created_at")
+
+
 class SongStore(Protocol):
     def add_song(self, song: NewSong) -> Song: ...
     def get_song(self, song_id: int) -> Song | None: ...
     def get_song_by_content_hash(self, content_hash: str) -> Song | None: ...
     def get_songs(self, song_ids: list[int]) -> dict[int, Song]: ...
-    def list_songs(self, limit: int = 100, offset: int = 0) -> list[Song]: ...
-    def count_songs(self) -> int: ...
+    def list_songs(
+        self,
+        limit: int = 100,
+        offset: int = 0,
+        query: str | None = None,
+        sort: str = "id",
+        descending: bool = False,
+    ) -> list[Song]:
+        """Page through songs; ``query`` is a case-insensitive substring match on
+        title/artist; ``sort`` is one of ``SONG_SORT_FIELDS``."""
+        ...
+
+    def count_songs(self, query: str | None = None) -> int: ...
     def random_song(self) -> Song | None: ...
 
 

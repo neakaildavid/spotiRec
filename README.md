@@ -3,8 +3,8 @@
 Shazam-style music identification (Phase 1) and audio-similarity discovery (Phase 2, planned).
 Record a few seconds of a song, and Constellation tells you what it is and where in the song you are.
 
-> Status: Milestones 1–3 are done (fingerprinting core, Postgres storage + ingestion CLI, evaluation).
-> Still to come: FastAPI, React frontend.
+> Status: Milestones 1–4 are done (fingerprinting core, Postgres + ingestion CLI, evaluation, HTTP API).
+> Still to come: React frontend.
 
 ## How it works
 
@@ -115,6 +115,31 @@ Reproduce:
 .venv/bin/python eval/run_eval.py --songs 200 --negatives 200
 ```
 
+## HTTP API
+
+`constellation serve` starts FastAPI on `localhost:8000`, with interactive docs at `/docs`.
+
+| Method & path | Purpose |
+|---|---|
+| `POST /identify` | Multipart `file` (any format ffmpeg reads, incl. browser WebM/Opus and Safari MP4). Returns `match`, `song`, `offset_s`, `confidence`, the query's constellation `peaks`, and a timing breakdown. "No match" is a normal `200` with `match: false`. |
+| `POST /songs` | Multipart `file` + optional `title` / `artist` / `album`. Runs the same ingestion pipeline as the CLI. `201` if new; `200` + `outcome: "skipped"` if identical audio already exists. |
+| `GET /songs` | `q` (title/artist search), `sort` (`id`/`title`/`artist`/`duration_s`/`created_at`), `order`, `limit` ≤ 500, `offset` → `{items, total}` |
+| `GET /songs/random` | A random library song (for the demo's "play something" button) |
+| `GET /songs/{id}` | One song |
+| `GET /songs/{id}/audio` | Streams the file with HTTP Range support (`206 Partial Content`), so the player can seek straight to the matched offset |
+| `GET /health` | Song count and the fingerprint-config version the API queries with |
+
+```bash
+curl -F "file=@clip.webm" localhost:8000/identify
+```
+
+Design notes:
+- **Sync endpoints on purpose.** Decoding and fingerprinting are CPU-bound and psycopg is used synchronously, so the endpoints are plain `def`. FastAPI then runs them in its threadpool instead of blocking the event loop. Each worker thread pins its own pooled connection for transactions.
+- **Uploads are bounded.** They're read in chunks and rejected with `413` once over the limit (15 MB for identify, 60 MB for songs). Only the first 20 s of a query is fingerprinted. Undecodable input returns `422` without leaking ffmpeg output or server paths.
+- **Content-addressed storage.** Uploaded songs are stored as `data/uploads/<sha256>.<ext>`: no path traversal via file names, and duplicate uploads are free.
+- **Cold-start warm-up.** On startup the API loads the fingerprint table and index into Postgres' cache with `pg_prewarm`. After a DB restart, the first identify took 3.4 s (the B-tree read page by page from disk); with warm-up it takes about 0.1 s.
+- **Measured end to end** (8 s WebM/Opus clip over HTTP, warm): about 65 ms, of which ~38 ms is ffmpeg decode, ~9 ms fingerprint and ~18 ms match. One uvicorn worker sustains **~41 identify req/s** at 8 concurrent clients (p95 224 ms). Numpy work holds the GIL, so throughput scales with `--workers`.
+
 ## Setup
 
 Requires Python 3.11+, ffmpeg, and Docker.
@@ -131,6 +156,7 @@ docker compose up -d                       # Postgres 16 on localhost:5433
 .venv/bin/constellation ingest data/fma_small --metadata data/fma_metadata/tracks.csv
 .venv/bin/constellation db stats
 .venv/bin/constellation identify path/to/clip.m4a
+.venv/bin/constellation serve --reload     # API on :8000, docs at /docs
 ```
 
 Set `CONSTELLATION_DATABASE_URL` to point at a different database.

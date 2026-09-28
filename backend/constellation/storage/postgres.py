@@ -15,7 +15,7 @@ from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 
 from constellation.models import IndexStatus, NewSong, Song
-from constellation.storage.base import LookupResult
+from constellation.storage.base import SONG_SORT_FIELDS, LookupResult
 
 DEFAULT_DSN = "postgresql://constellation:constellation@localhost:5433/constellation"
 
@@ -103,6 +103,23 @@ class PostgresStorage:
             finally:
                 self._local.conn = None
 
+    def warm_up(self) -> None:
+        """Best-effort: wait for the pool, then load the fingerprint table and
+        its hash index into Postgres' buffer cache with ``pg_prewarm``.
+
+        Without this, the first identify after a restart reads the B-tree from
+        disk page by page (seconds instead of milliseconds). Needs the
+        pg_prewarm contrib extension (bundled with the official image) and the
+        right to create it; silently skipped otherwise.
+        """
+        self.pool.wait()
+        try:
+            with self._conn() as conn:
+                conn.execute("CREATE EXTENSION IF NOT EXISTS pg_prewarm")
+                conn.execute("SELECT pg_prewarm('fingerprints_hash_idx'), pg_prewarm('fingerprints')")
+        except psycopg.Error:
+            pass
+
     def init_schema(self) -> None:
         with self._conn() as conn:
             conn.execute(schema_sql())
@@ -134,12 +151,36 @@ class PostgresStorage:
     def get_songs(self, song_ids: list[int]) -> dict[int, Song]:
         return {s.id: s for s in self._songs_where("WHERE id = ANY(%s)", (list(song_ids),))}
 
-    def list_songs(self, limit: int = 100, offset: int = 0) -> list[Song]:
-        return self._songs_where("", (limit, offset), "ORDER BY id LIMIT %s OFFSET %s")
+    @staticmethod
+    def _search_clause(query: str | None) -> tuple[str, tuple]:
+        """Substring search on title/artist. A sequential scan is fine at ~10^4
+        songs; at larger scale this would get a pg_trgm GIN index."""
+        if not query:
+            return "", ()
+        escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        pattern = f"%{escaped}%"
+        return "WHERE title ILIKE %s OR artist ILIKE %s", (pattern, pattern)
 
-    def count_songs(self) -> int:
+    def list_songs(
+        self,
+        limit: int = 100,
+        offset: int = 0,
+        query: str | None = None,
+        sort: str = "id",
+        descending: bool = False,
+    ) -> list[Song]:
+        if sort not in SONG_SORT_FIELDS:  # whitelist: the column name is interpolated
+            raise ValueError(f"cannot sort by {sort!r}")
+        where, params = self._search_clause(query)
+        col = f"lower({sort})" if sort in ("title", "artist") else sort
+        direction = "DESC" if descending else "ASC"
+        suffix = f"ORDER BY {col} {direction} NULLS LAST, id LIMIT %s OFFSET %s"
+        return self._songs_where(where, (*params, limit, offset), suffix)
+
+    def count_songs(self, query: str | None = None) -> int:
+        where, params = self._search_clause(query)
         with self._conn() as conn:
-            return conn.execute("SELECT count(*) FROM songs").fetchone()[0]
+            return conn.execute(f"SELECT count(*) FROM songs {where}", params).fetchone()[0]
 
     def random_song(self) -> Song | None:
         # ORDER BY random() scans the table; fine for ~10^4 songs.
