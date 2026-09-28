@@ -1,0 +1,20 @@
+services:
+  db:
+    # Phase 2 can switch to pgvector/pgvector:pg16 for embedding search.
+    image: postgres:16
+    environment:
+      POSTGRES_USER: constellation
+      POSTGRES_PASSWORD: constellation
+      POSTGRES_DB: constellation
+    ports:
+      - "5433:5432" # 5433 on the host avoids clashing with a local Postgres
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U constellation"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  pgdata:
