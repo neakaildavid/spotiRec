@@ -87,8 +87,9 @@ class FingerprintConfig:
 class MatchConfig:
     """Parameters for scoring candidates and deciding "match" vs "no match".
 
-    Thresholds are provisional; the eval milestone calibrates them against
-    queries from songs that are *not* in the library (false-positive rate).
+    ``min_confidence`` is calibrated by ``eval/run_eval.py``: the lowest value
+    with zero false positives on held-out songs that are *not* in the library
+    (0.25 on the FMA eval; see README "Evaluation").
     """
 
     # Offsets within this many frames of each other are counted together. A
@@ -97,7 +98,7 @@ class MatchConfig:
     offset_tolerance_frames: int = 1
     # Minimum number of time-aligned hash matches to declare a match.
     min_aligned_matches: int = 5
-    # Minimum confidence (0..1) to declare a match.
-    min_confidence: float = 0.2
+    # Minimum confidence (0..1) to declare a match. Calibrated, see docstring.
+    min_confidence: float = 0.25
     # Aligned-match count at which the "strength" part of confidence saturates.
     confidence_saturation: int = 25

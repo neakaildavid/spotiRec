@@ -3,8 +3,8 @@
 Shazam-style music identification (Phase 1) and audio-similarity discovery (Phase 2, planned).
 Record a few seconds of a song, and Constellation tells you what it is and where in the song you are.
 
-> Status: Milestones 1–2 are done (fingerprinting core, Postgres storage, ingestion CLI).
-> Still to come: evaluation, FastAPI, React frontend.
+> Status: Milestones 1–3 are done (fingerprinting core, Postgres storage + ingestion CLI, evaluation).
+> Still to come: FastAPI, React frontend.
 
 ## How it works
 
@@ -51,6 +51,69 @@ file ─▶ plan (sha256 + index-status lookup) ─▶ compute (worker processes
 | `fingerprints` | `(hash INT, song_id INT, anchor_time INT)`, no primary key. A B-tree on `hash` for lookups; a BRIN index on `song_id` for re-indexing |
 
 Why no primary key on `fingerprints`? The table is append-only and only ever read by `hash`. A surrogate key would add about 30% to the biggest table for nothing. Rows are bulk-loaded with **binary COPY**, with the payload built by numpy.
+
+## Evaluation
+
+`eval/run_eval.py` queries the ingested library with random 5 s and 10 s clips, degraded eight ways. It also queries **held-out FMA songs that aren't in the library**, to measure false positives. Full output, including setup details, is in [`eval/results/results.md`](eval/results/results.md).
+
+**Headline (2,000-song library, 6,384 queries):** 100% top-1 on clean, low-pass, 32 kbps MP3 and simulated phone recordings. 95.5% / 99.0% (5 s / 10 s clips) at 0 dB SNR. **0 false positives** in 1,600 held-out queries. p95 latency **33 ms** (5 s clip). 257 MB database.
+
+| Condition | 5 s clip | 10 s clip | 5 s raw top-1 | 10 s raw top-1 |
+|---|---:|---:|---:|---:|
+| Clean | 100.0% | 100.0% | 100.0% | 100.0% |
+| White noise, 15 dB SNR | 100.0% | 100.0% | 100.0% | 100.0% |
+| White noise, 5 dB SNR | 99.0% | 100.0% | 100.0% | 100.0% |
+| White noise, 0 dB SNR | 95.5% | 99.0% | 99.0% | 100.0% |
+| White noise, -5 dB SNR | 74.5% | 92.0% | 96.0% | 97.5% |
+| Low-pass 3.4 kHz | 100.0% | 100.0% | 100.0% | 100.0% |
+| MP3 32 kbps | 100.0% | 100.0% | 100.0% | 100.0% |
+| Phone sim (band-pass + 10 dB noise + MP3) | 100.0% | 100.0% | 100.0% | 100.0% |
+
+*Top-1* = returned a match (confidence ≥ 0.25, ≥ 5 aligned hashes) **and** it was the right song. *Raw top-1* ignores the no-match threshold.
+
+**False positives:** 0 of 1,600 held-out test queries returned a song, across all conditions.
+
+**How the no-match threshold was chosen:** each query's raw scores are recorded. The confidence threshold is the lowest value with zero false positives on a *calibration* half of the negative queries, and it's then evaluated on the other, disjoint half. The trade-off:
+
+| Confidence threshold | Top-1 accuracy | False-positive rate |
+|---:|---:|---:|
+| 0.00 | 99.5% | 58.3% |
+| 0.05 | 99.4% | 11.4% |
+| 0.10 | 99.2% | 2.6% |
+| 0.15 | 98.8% | 1.1% |
+| 0.20 | 98.5% | 0.2% |
+| 0.25 ← chosen | 97.5% | 0.0% |
+| 0.30 | 97.1% | 0.0% |
+| 0.40 | 96.1% | 0.0% |
+| 0.50 | 95.0% | 0.0% |
+
+At −5 dB SNR the right song is still ranked first 96–98% of the time ("raw top-1"). Most of the drop after thresholding is the matcher correctly saying *"not confident"* rather than guessing. That's the behaviour you want from an ID service.
+
+**An audit finding:** the first run forced the threshold up to 0.85. The cause was one held-out song, Let Me Crazy's "Intro", which "falsely" matched the library's "Outro" from the same album. It turned out the Outro reprises the Intro: 72 aligned hashes at a constant offset. That's a *correct* identification of shared audio, so the track is excluded from the negatives, documented in `eval/shared_audio_exclusions.txt`.
+
+**Offset accuracy:** Median |error| **9 ms**, p95 21 ms; 98.9% within 100 ms (one STFT frame = 23 ms).
+
+**Latency** (fingerprint + Postgres lookup + scoring, sequential, warm cache; Apple Silicon laptop):
+
+| Clip | Mean | p50 | p95 | Fingerprint | DB lookup | Scoring | Hashes / query | DB rows hit |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| 5 s | 19 ms | 17 ms | **33 ms** | 5 ms | 13 ms | 1 ms | 344 | 6,544 |
+| 10 s | 33 ms | 31 ms | **48 ms** | 10 ms | 21 ms | 1 ms | 709 | 12,817 |
+
+**Index size:**
+
+| Songs | Fingerprint rows | Rows / song | Fingerprint table | Indexes | Whole DB |
+|---:|---:|---:|---:|---:|---:|
+| 1,998 | 4,341,747 | 2,173 | 183 MB | 64 MB | 257 MB |
+
+About 2,170 hashes per 30 s clip. That extrapolates to about 1 GB for all 8,000 fma_small tracks. The DB lookup dominates latency; the offset-histogram scoring is vectorized numpy and takes about 1 ms.
+
+Reproduce:
+
+```bash
+.venv/bin/python scripts/download_fma.py --skip 2000 --limit 200 --out data/fma_holdout   # never ingested
+.venv/bin/python eval/run_eval.py --songs 200 --negatives 200
+```
 
 ## Setup
 

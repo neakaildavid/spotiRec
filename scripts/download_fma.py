@@ -6,6 +6,8 @@ disk only ever holds the extracted mp3s we actually use.
 
     python scripts/download_fma.py --limit 2000        # balanced subset
     python scripts/download_fma.py --limit 8000        # all of fma_small
+    # held-out songs for the eval's "should not match" queries (never ingested):
+    python scripts/download_fma.py --skip 2000 --limit 200 --out data/fma_holdout
 
 Re-running is incremental: files already on disk are skipped.
 """
@@ -155,13 +157,16 @@ def choose_tracks(tracks_csv: Path, limit: int, seed: int) -> list[int]:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--limit", type=int, default=2000)
+    ap.add_argument("--skip", type=int, default=0, help="skip the first N of the selection order")
+    ap.add_argument("--out", type=Path, default=DATA / "fma_small")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--workers", type=int, default=8)
     args = ap.parse_args()
 
     tracks_csv = fetch_metadata()
-    wanted = choose_tracks(tracks_csv, args.limit, args.seed)
-    out_dir = DATA / "fma_small"
+    # The selection order is deterministic, so --skip N gives tracks disjoint from --limit N.
+    wanted = choose_tracks(tracks_csv, args.skip + args.limit, args.seed)[args.skip :]
+    out_dir = args.out
     todo = [tid for tid in wanted if not (out_dir / audio_relpath(tid)).exists()]
     print(f"{len(wanted)} tracks selected, {len(wanted) - len(todo)} already present, {len(todo)} to fetch")
     if not todo:
