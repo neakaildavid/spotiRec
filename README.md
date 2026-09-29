@@ -3,8 +3,13 @@
 Shazam-style music identification (Phase 1) and audio-similarity discovery (Phase 2, planned).
 Record a few seconds of a song, and Constellation tells you what it is and where in the song you are.
 
-> Status: Milestones 1–4 are done (fingerprinting core, Postgres + ingestion CLI, evaluation, HTTP API).
-> Still to come: React frontend.
+> Status: **Phase 1 is complete**: fingerprinting core, Postgres + ingestion CLI, evaluation, HTTP API and web app.
+> Phase 2 (audio-embedding "Discover similar songs") is next.
+
+<p align="center">
+  <img src="docs/screenshots/identify-listening.png" width="49%" alt="Listening, with a live frequency halo around the record button" />
+  <img src="docs/screenshots/identify-result.png" width="49%" alt="Match result with the query's constellation map" />
+</p>
 
 ## How it works
 
@@ -140,9 +145,32 @@ Design notes:
 - **Cold-start warm-up.** On startup the API loads the fingerprint table and index into Postgres' cache with `pg_prewarm`. After a DB restart, the first identify took 3.4 s (the B-tree read page by page from disk); with warm-up it takes about 0.1 s.
 - **Measured end to end** (8 s WebM/Opus clip over HTTP, warm): about 65 ms, of which ~38 ms is ffmpeg decode, ~9 ms fingerprint and ~18 ms match. One uvicorn worker sustains **~41 identify req/s** at 8 concurrent clients (p95 224 ms). Numpy work holds the GIL, so throughput scales with `--workers`.
 
+## Web app
+
+React 19 + TypeScript + Vite + Tailwind CSS v4, in `frontend/`.
+
+<p align="center">
+  <img src="docs/screenshots/library.png" width="70%" alt="Library grid with generated cover art" />
+  <img src="docs/screenshots/mobile-library.png" width="24%" alt="Mobile layout with bottom tab bar" />
+</p>
+
+- **Identify:** record from the mic (MediaRecorder, up to 10 s; the eval shows 10 s clips hold ~99% accuracy at 0 dB SNR) or upload a clip. While listening, a radial frequency halo is drawn from a Web Audio `AnalyserNode`. While matching, a constellation map animates. The result card shows cover, title, artist, "matched at 1:23", a confidence meter, and **Play from 1:23**. Below it, "How it matched" draws the server's real peaks and peak-pair hashes with the aligned-match counts.
+- **Demo mode:** "Play a random library song" plays a track, so you can identify it from a phone, or from the same laptop with the volume up.
+- **Library:** grid of cover cards (hover lift, play badge) or a sortable track list (#, title, artist, duration), with server-side search and infinite scroll.
+- **Player bar:** persistent, with play/pause, ±10 s, a scrub bar, volume, the Space shortcut, and Media Session (lock-screen) controls.
+- **Responsive:** the sidebar becomes a bottom tab bar on phones, and the record button sits in the lower half of the screen for thumb reach. Honors `prefers-reduced-motion` (CSS animations off; canvas visualizations render static or at a calm rate).
+
+Design notes:
+- **Mic processing is disabled** (`echoCancellation`, `noiseSuppression`, `autoGainControl`). Browsers tune these for voice calls: they treat music as noise and cancel audio the device is playing itself, which is exactly the signal we need.
+- **Generated covers.** FMA lacks reliable album art, so each song gets a deterministic SVG cover from its id: a seeded PRNG picks one of 10 curated palettes and 4 compositions. Same song, same cover, everywhere, with zero storage or requests.
+- **Two player contexts.** Playback time updates every frame, so it lives in its own context. The dozens of `SongCard`s and `TrackRow`s subscribe only to "which song, playing or not", and don't re-render 60× per second.
+- **Seeking via HTTP Range.** "Play from 1:23" sets `currentTime` after metadata loads. The API's Range support means the browser fetches from the offset instead of downloading the whole file.
+- **Reusable pieces for Phase 2.** `SongCard` (with an optional `caption`, e.g. "92% similar"), `TrackRow`, `PlayerBar`, `RecordButton`, `CoverArt` and `ConstellationViz` are standalone components. The Discover nav item is already stubbed.
+- **Verified end to end in headless Chrome**, driven with a WAV file as a fake microphone: record → WebM/Opus upload → correct match at the right offset. The same run covered the upload flow, library views, mobile layout and reduced motion, with no console errors.
+
 ## Setup
 
-Requires Python 3.11+, ffmpeg, and Docker.
+Requires Python 3.11+, ffmpeg, Docker, and Node 20+.
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
@@ -157,7 +185,11 @@ docker compose up -d                       # Postgres 16 on localhost:5433
 .venv/bin/constellation db stats
 .venv/bin/constellation identify path/to/clip.m4a
 .venv/bin/constellation serve --reload     # API on :8000, docs at /docs
+
+cd frontend && npm install && npm run dev  # web app on http://localhost:5173 (proxies the API)
 ```
+
+To try the demo from a phone on the same network, open `http://<your-laptop-ip>:5173`. Note that browsers only allow microphone access on `https` or `localhost`, so for phone recording serve the app over HTTPS (e.g. a tunnel such as `cloudflared` or `ngrok`). Uploading a clip works over plain HTTP.
 
 Set `CONSTELLATION_DATABASE_URL` to point at a different database.
 

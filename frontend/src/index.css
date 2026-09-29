@@ -1,0 +1,134 @@
+@import "tailwindcss";
+
+/*
+ * Design tokens. One saturated accent ("nebula violet") used sparingly for
+ * primary actions, active states and progress; everything else is a
+ * near-black, faintly violet-tinted neutral ramp so the accent reads as the
+ * only color on screen.
+ */
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+
+  --color-bg: #0b0a10;
+  --color-surface: #131119;
+  --color-elevated: #1b1824;
+  --color-hover: #25212f;
+  --color-line: #2c2838;
+
+  --color-fg: #ffffff;
+  --color-muted: #a8a3b6;
+  --color-subtle: #6f6a7e;
+
+  --color-accent: #a06cff;
+  --color-accent-hover: #b58bff;
+  --color-accent-deep: #7a3ff0;
+  --color-accent-fg: #0b0a10;
+
+  --ease-out-soft: cubic-bezier(0.22, 1, 0.36, 1);
+
+  --animate-pulse-ring: pulse-ring 1.8s var(--ease-out-soft) infinite;
+  --animate-shimmer: shimmer 1.4s linear infinite;
+  --animate-fade-up: fade-up 240ms var(--ease-out-soft) both;
+  --animate-eq: eq 900ms ease-in-out infinite;
+
+  @keyframes pulse-ring {
+    0% { transform: scale(1); opacity: 0.55; }
+    100% { transform: scale(1.65); opacity: 0; }
+  }
+  @keyframes shimmer {
+    0% { background-position: -200% 0; }
+    100% { background-position: 200% 0; }
+  }
+  @keyframes fade-up {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes eq {
+    0%, 100% { transform: scaleY(0.35); }
+    50% { transform: scaleY(1); }
+  }
+}
+
+@layer base {
+  html {
+    color-scheme: dark;
+    -webkit-tap-highlight-color: transparent;
+  }
+  body {
+    @apply bg-bg text-fg font-sans antialiased;
+    font-feature-settings: "cv11", "ss01";
+  }
+  :focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+    border-radius: 6px;
+  }
+  ::selection {
+    background: color-mix(in oklab, var(--color-accent) 45%, transparent);
+  }
+}
+
+@layer components {
+  /* Range inputs (scrub bar, volume): the filled part is driven by --progress. */
+  .range {
+    @apply h-4 w-full cursor-pointer appearance-none bg-transparent;
+    --progress: 0%;
+  }
+  .range::-webkit-slider-runnable-track {
+    height: 4px;
+    border-radius: 999px;
+    background: linear-gradient(to right, var(--track-fill, #fff) var(--progress), var(--color-line) var(--progress));
+  }
+  .range::-moz-range-track {
+    height: 4px;
+    border-radius: 999px;
+    background: linear-gradient(to right, var(--track-fill, #fff) var(--progress), var(--color-line) var(--progress));
+  }
+  .range::-webkit-slider-thumb {
+    appearance: none;
+    margin-top: -4px;
+    height: 12px;
+    width: 12px;
+    border-radius: 999px;
+    background: #fff;
+    opacity: 0;
+    transition: opacity 150ms;
+  }
+  .range::-moz-range-thumb {
+    height: 12px;
+    width: 12px;
+    border: 0;
+    border-radius: 999px;
+    background: #fff;
+    opacity: 0;
+    transition: opacity 150ms;
+  }
+  .range:hover,
+  .range:focus-visible {
+    --track-fill: var(--color-accent);
+  }
+  .range:hover::-webkit-slider-thumb,
+  .range:focus-visible::-webkit-slider-thumb,
+  .range:hover::-moz-range-thumb,
+  .range:focus-visible::-moz-range-thumb {
+    opacity: 1;
+  }
+
+  .skeleton {
+    background: linear-gradient(90deg, var(--color-elevated) 25%, var(--color-hover) 50%, var(--color-elevated) 75%);
+    background-size: 200% 100%;
+    @apply animate-shimmer rounded-md;
+  }
+}
+
+/* Respect the OS "reduce motion" setting: keep state changes, drop movement. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
