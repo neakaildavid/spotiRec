@@ -4,7 +4,7 @@ Shazam-style music identification (Phase 1) and audio-similarity discovery (Phas
 Record a few seconds of a song, and Constellation tells you what it is and where in the song you are.
 
 > Status: **Phase 1 is complete**: fingerprinting core, Postgres + ingestion CLI, evaluation, HTTP API and web app.
-> Phase 2 (audio-embedding "Discover similar songs") is next.
+> **Phase 2** (audio-embedding "Discover similar songs") is in progress: embedders and similarity eval done.
 
 <p align="center">
   <img src="docs/screenshots/identify-listening.png" width="49%" alt="Listening, with a live frequency halo around the record button" />
@@ -168,12 +168,34 @@ Design notes:
 - **Reusable pieces for Phase 2.** `SongCard` (with an optional `caption`, e.g. "92% similar"), `TrackRow`, `PlayerBar`, `RecordButton`, `CoverArt` and `ConstellationViz` are standalone components. The Discover nav item is already stubbed.
 - **Verified end to end in headless Chrome**, driven with a WAV file as a fake microphone: record → WebM/Opus upload → correct match at the right offset. The same run covered the upload flow, library views, mobile layout and reduced motion, with no console errors.
 
+## Phase 2: similar-sounding songs (in progress)
+
+Fingerprints only match *the same recording*. Phase 2 adds a second index of **CLAP** audio embeddings (`embedding/clap.py`). CLAP maps audio and text into one 512-d space, so a single model gives both "songs that sound like this" and "describe a sound" text search. Each song vector is the normalized mean of its 10 s window embeddings.
+
+**Similarity eval** (`eval/run_similarity_eval.py`, 1,998 songs, leave-one-out, k = 10; full report in [`eval/results/similarity.md`](eval/results/similarity.md)):
+
+| Embedding | Genre P@10 | Genre P@10, artist-filtered | kNN genre acc. | Same-artist hit@10 |
+|---|---:|---:|---:|---:|
+| Random | 12.8% | 12.6% | 13.7% | 3.0% |
+| Hand-crafted (MFCC / chroma / spectral contrast) | 35.5% | 32.4% | 47.4% | 36.9% |
+| **CLAP** (`laion/clap-htsat-unfused`) | **52.0%** | **48.0%** | **63.6%** | **54.6%** |
+
+- **CLAP beats the classic features in all 8 genres.** Zero-shot genre classification from text prompts alone reaches 35.9% (chance 12.5%). A clean 10 s clip retrieves its own song first 97.5% of the time.
+- **Artist-filtered precision** drops same-artist neighbours before scoring. Songs from one album sound alike *and* share a genre label, so without the filter a model could score well by finding the same album.
+- **Genre agreement is a proxy.** Two "Rock" tracks can sound nothing alike, and FMA's Experimental and International labels are broad; those are the weakest genres for every method.
+
+Findings along the way:
+- **The obvious checkpoint was broken.** `laion/larger_clap_music` scored at chance, with every text query returning the same three songs. Our code matched the reference forward pass exactly. Its Hugging Face checkpoint stores the contrastive temperature as ~0.03 (exp → 1.0, an untrained value), and its song vectors are nearly parallel (mean pairwise cosine 0.89). `clap-htsat-unfused` passes the same checks (temperature 18.7, mean cosine 0.50).
+- **Mean-centering was tested and rejected.** Subtracting the library mean (a common fix for "hub" vectors) moved audio P@10 only 52.0% → 53.5%, and the vectors showed no hubness problem to begin with. It isn't worth a stored library statistic that has to be recomputed as songs are added.
+- **Cost:** 244 ms per 30 s song on the M2 GPU (MPS), and 2 KB per song, versus about 2,170 fingerprint rows (~120 KB with index) per song.
+
 ## Setup
 
 Requires Python 3.11+, ffmpeg, Docker, and Node 20+.
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
+# Phase 2 similarity search also needs:  .venv/bin/pip install -e '.[embeddings]'   (~2 GB incl. model)
 docker compose up -d                       # Postgres 16 on localhost:5433
 .venv/bin/constellation db init
 

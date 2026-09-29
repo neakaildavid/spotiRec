@@ -8,3 +8,4 @@ dist/
 .env
 eval/results/*.json
 *.tsbuildinfo
+eval/results/similarity.json

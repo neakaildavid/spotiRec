@@ -23,6 +23,8 @@ constellation = "constellation.cli:main"
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "httpx2"]
+# Phase 2 similarity search (CLAP embeddings + hand-crafted baseline). ~2 GB with model weights.
+embeddings = ["torch>=2.4", "transformers>=4.45", "librosa>=0.10"]
 
 [tool.setuptools.packages.find]
 where = ["backend"]
@@ -34,4 +36,5 @@ constellation = ["storage/schema.sql"]
 testpaths = ["backend/tests"]
 markers = [
     "integration: needs external services (Postgres via docker compose)",
+    "model: needs the CLAP weights in the local Hugging Face cache (pip install -e '.[embeddings]')",
 ]
