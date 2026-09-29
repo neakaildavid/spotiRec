@@ -1,0 +1,5 @@
+# Held-out FMA tracks excluded from the negative ("not in library") set because a
+# manual audit found they contain audio that IS in the library, so matching them
+# is a correct identification rather than a false positive.
+# Format: <holdout track_id>  <library track_id>  <reason>
+124992  125004  Let Me Crazy "Intro" is reprised in "Outro" (same album); 72 aligned hashes at a constant 2.7 s offset across the whole clip
