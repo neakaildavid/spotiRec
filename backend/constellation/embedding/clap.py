@@ -17,6 +17,7 @@ cosine 0.50, zero-shot 35% on a balanced 80-song probe), so we use it.
 
 from __future__ import annotations
 
+import os
 import threading
 from typing import Any
 
@@ -68,6 +69,10 @@ class ClapEmbedder:
     def _load(self) -> None:
         if self._model is not None:
             return
+        # This checkpoint ships .bin weights; on every load transformers would
+        # otherwise start a background thread asking the Hub to convert them to
+        # safetensors, a network call even with local_files_only=True.
+        os.environ.setdefault("DISABLE_SAFETENSORS_CONVERSION", "1")
         import torch
         from transformers import ClapModel, ClapProcessor
 
