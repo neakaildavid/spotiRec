@@ -73,8 +73,16 @@ class ClapEmbedder:
 
         if self.device is None:
             self.device = "mps" if torch.backends.mps.is_available() else ("cuda" if torch.cuda.is_available() else "cpu")
-        self._processor = ClapProcessor.from_pretrained(self.model_id)
-        self._model = ClapModel.from_pretrained(self.model_id).eval().to(self.device)
+        # Prefer the local cache: otherwise every load makes (sometimes slow,
+        # rate-limited) Hub requests to check for updates, even with the model
+        # cached. Fall back to downloading on first use.
+        try:
+            self._processor = ClapProcessor.from_pretrained(self.model_id, local_files_only=True)
+            model = ClapModel.from_pretrained(self.model_id, local_files_only=True)
+        except OSError:
+            self._processor = ClapProcessor.from_pretrained(self.model_id)
+            model = ClapModel.from_pretrained(self.model_id)
+        self._model = model.eval().to(self.device)
 
     @staticmethod
     def _features(out: Any) -> Any:

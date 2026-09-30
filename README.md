@@ -4,7 +4,7 @@ Shazam-style music identification (Phase 1) and audio-similarity discovery (Phas
 Record a few seconds of a song, and Constellation tells you what it is and where in the song you are.
 
 > Status: **Phase 1 is complete**: fingerprinting core, Postgres + ingestion CLI, evaluation, HTTP API and web app.
-> **Phase 2** (audio-embedding "Discover similar songs") is in progress: embedders and similarity eval done.
+> **Phase 2** (audio-embedding "Discover similar songs") is in progress: embedders, similarity eval, and pgvector storage + ingestion done.
 
 <p align="center">
   <img src="docs/screenshots/identify-listening.png" width="49%" alt="Listening, with a live frequency halo around the record button" />
@@ -189,6 +189,19 @@ Findings along the way:
 - **Mean-centering was tested and rejected.** Subtracting the library mean (a common fix for "hub" vectors) moved audio P@10 only 52.0% → 53.5%, and the vectors showed no hubness problem to begin with. It isn't worth a stored library statistic that has to be recomputed as songs are added.
 - **Cost:** 244 ms per 30 s song on the M2 GPU (MPS), and 2 KB per song, versus about 2,170 fingerprint rows (~120 KB with index) per song.
 
+**Storage and ingestion.** Vectors live in Postgres via **pgvector**, in `song_embeddings (song_id, model, vec)`, with an HNSW index. `EmbeddingIndexer` plugs into the Phase 1 pipeline unchanged. `constellation ingest --indexes embedding` backfilled all 1,998 songs in 7 minutes without touching the fingerprints, and the stored vectors match the eval's to 5×10⁻⁸. HNSW against exact search, every song querying its 10 nearest ([`eval/results/vector_index.md`](eval/results/vector_index.md)):
+
+| Method | Recall@10 | p50 | p95 |
+|---|---:|---:|---:|
+| pgvector HNSW, `ef_search` 40 (default) | 99.9% | 1.5 ms | 2.1 ms |
+| pgvector exact (sequential scan) | 100% | 3.9 ms | 5.0 ms |
+
+Design notes:
+- **One table, many models.** HNSW needs a fixed dimension, but the `vec` column is dimension-less so different models can share it. Each model gets a *partial expression index*: `USING hnsw ((vec::vector(512)) vector_cosine_ops) WHERE model = 'clap-htsat'`. A test checks the query plan really uses it.
+- **Two-pass ingestion.** CPU-bound fingerprinting fans out over worker processes; the model-based indexer runs in one process on the GPU. Separate workers would each load a 0.6 GB model copy, which doesn't fit in 8 GB of RAM.
+- **`ef_search` is at least the LIMIT.** The eval showed HNSW returns at most `ef_search` rows (recall capped at 90% for `ef_search` 10 with an 11-row query), so the store raises `ef_search` for large *k*.
+- **Docker image choice.** The DB image moved to `pgvector/pgvector:pg16-trixie`. The plain `pg16` tag is built on Debian bookworm (glibc 2.36), while the original `postgres:16` volume was created on trixie (glibc 2.41). Postgres warned of a collation-version mismatch, which can silently corrupt text B-tree indexes such as the `content_hash` idempotency key. Matching the OS avoids it.
+
 ## Setup
 
 Requires Python 3.11+, ffmpeg, Docker, and Node 20+.
@@ -203,7 +216,7 @@ docker compose up -d                       # Postgres 16 on localhost:5433
 # requests (no 7 GB zip on disk). Re-runnable; --limit 8000 gets the full set.
 .venv/bin/python scripts/download_fma.py --limit 2000
 
-.venv/bin/constellation ingest data/fma_small --metadata data/fma_metadata/tracks.csv
+.venv/bin/constellation ingest data/fma_small --metadata data/fma_metadata/tracks.csv   # fingerprints (+ CLAP if installed)
 .venv/bin/constellation db stats
 .venv/bin/constellation identify path/to/clip.m4a
 .venv/bin/constellation serve --reload     # API on :8000, docs at /docs

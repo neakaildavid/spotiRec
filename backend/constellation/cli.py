@@ -3,6 +3,8 @@
     constellation db init                      # create tables (idempotent)
     constellation db stats                     # row counts and on-disk sizes
     constellation ingest data/fma_small --metadata data/fma_metadata/tracks.csv --workers 8
+    constellation ingest data/fma_small --indexes embedding   # just (back)fill CLAP vectors
+    constellation db backfill-genres --metadata data/fma_metadata/tracks.csv
     constellation identify clip.m4a
     constellation serve --reload               # FastAPI on http://localhost:8000 (docs at /docs)
 """
@@ -48,7 +50,32 @@ def cmd_db_stats(args: argparse.Namespace) -> None:
     print(f"  table:            {_human(st['fingerprints_table_bytes'])}")
     print(f"  indexes:          {_human(st['fingerprints_index_bytes'])}")
     print(f"metadata tables:    {_human(st['metadata_bytes'])}")
+    print(f"embeddings:         {st['embeddings']:,}")
+    print(f"  table:            {_human(st['embeddings_table_bytes'])}")
+    print(f"  HNSW index:       {_human(st['embeddings_index_bytes'])}")
     print(f"database total:     {_human(st['database_bytes'])}")
+
+
+def cmd_db_backfill_genres(args: argparse.Namespace) -> None:
+    """Fill songs.genre from FMA metadata for rows ingested before the column existed."""
+    from constellation.metadata.fma import load_tracks
+
+    meta = load_tracks(args.metadata)
+    with _storage() as s:
+        s.init_schema()
+        genres = {}
+        offset = 0
+        while page := s.list_songs(limit=1000, offset=offset):
+            for song in page:
+                if song.source == "fma" and song.source_id and song.source_id.isdigit():
+                    t = meta.get(int(song.source_id))
+                    if t and t.genre:
+                        genres[song.id] = t.genre
+            offset += len(page)
+        n = s.set_genres(genres)
+        print(f"updated {n} songs")
+        for g, c in s.list_genres():
+            print(f"  {g:<14} {c:>5}")
 
 
 def _discover(root: Path, limit: int | None) -> list[Path]:
@@ -61,6 +88,7 @@ def cmd_ingest(args: argparse.Namespace) -> None:
 
     from constellation.metadata.fma import load_tracks, track_id_from_path
     from constellation.pipeline import Outcome, SongSource, default_indexers, ingest_many
+    from constellation.pipeline.indexers import embeddings_available
 
     files = _discover(Path(args.folder), args.limit)
     if not files:
@@ -79,25 +107,40 @@ def cmd_ingest(args: argparse.Namespace) -> None:
                 album=t.album if t else None,
                 source="fma" if tid is not None else "file",
                 source_id=str(tid) if tid is not None else None,
+                genre=t.genre if t else None,
             )
         )
 
-    started = time.perf_counter()
-    bar = tqdm(total=len(sources), unit="song", dynamic_ncols=True)
+    wanted = {x.strip() for x in args.indexes.split(",")} if args.indexes else None
+    if wanted and "embedding" in wanted and not embeddings_available():
+        sys.exit("embedding index needs the optional extra: pip install -e '.[embeddings]'")
+    indexers = [ix for ix in default_indexers() if wanted is None or ix.name.split(":")[0] in wanted]
+    if not indexers:
+        sys.exit(f"no indexers match --indexes {args.indexes!r} (choose from: fingerprint, embedding)")
 
-    def on_result(r) -> None:
-        bar.update(1)
-        if r.outcome is Outcome.FAILED:
-            bar.write(f"  failed: {r.source.path.name}: {r.error}")
-
+    # Two passes: CPU-bound indexers fan out across worker processes; model-based
+    # ones run in this process (one model copy, on the GPU if there is one). Each
+    # pass is idempotent on its own, so the second only does what's missing.
+    groups = [[ix for ix in indexers if ix.parallel], [ix for ix in indexers if not ix.parallel]]
     with _storage() as storage:
         storage.init_schema()
-        counts = ingest_many(storage, sources, default_indexers(), workers=args.workers, on_result=on_result)
-    bar.close()
-    elapsed = time.perf_counter() - started
-    print(" | ".join(f"{o.value}: {n}" for o, n in counts.items()) + f"  ({elapsed:.1f}s)")
-    if counts[Outcome.FAILED]:
-        print("failed files are not recorded and will be retried on the next run")
+        for group in (g for g in groups if g):
+            names = ", ".join(ix.name for ix in group)
+            started = time.perf_counter()
+            bar = tqdm(total=len(sources), unit="song", dynamic_ncols=True, desc=names)
+
+            def on_result(r) -> None:
+                bar.update(1)
+                if r.outcome is Outcome.FAILED:
+                    bar.write(f"  failed: {r.source.path.name}: {r.error}")
+
+            workers = args.workers if group[0].parallel else 1
+            counts = ingest_many(storage, sources, group, workers=workers, on_result=on_result)
+            bar.close()
+            elapsed = time.perf_counter() - started
+            print(f"[{names}] " + " | ".join(f"{o.value}: {n}" for o, n in counts.items()) + f"  ({elapsed:.1f}s)")
+            if counts[Outcome.FAILED]:
+                print("  failed files are not recorded and will be retried on the next run")
 
 
 def cmd_identify(args: argparse.Namespace) -> None:
@@ -136,12 +179,16 @@ def main(argv: list[str] | None = None) -> None:
     db = sub.add_parser("db", help="database management").add_subparsers(required=True)
     db.add_parser("init", help="create tables").set_defaults(func=cmd_db_init)
     db.add_parser("stats", help="row counts and sizes").set_defaults(func=cmd_db_stats)
+    bf = db.add_parser("backfill-genres", help="fill songs.genre from FMA tracks.csv")
+    bf.add_argument("--metadata", required=True)
+    bf.set_defaults(func=cmd_db_backfill_genres)
 
     ing = sub.add_parser("ingest", help="fingerprint a folder of audio files")
     ing.add_argument("folder")
     ing.add_argument("--metadata", help="FMA tracks.csv for titles/artists")
     ing.add_argument("--workers", type=int, default=max(1, (os.cpu_count() or 2) - 1))
     ing.add_argument("--limit", type=int, help="only the first N files (sorted by path)")
+    ing.add_argument("--indexes", help="comma-separated subset: fingerprint,embedding (default: all available)")
     ing.set_defaults(func=cmd_ingest)
 
     idf = sub.add_parser("identify", help="identify an audio clip")

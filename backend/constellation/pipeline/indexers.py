@@ -18,12 +18,17 @@ from typing import Any, ClassVar, Protocol
 import numpy as np
 
 from constellation.config import FingerprintConfig
+from constellation.embedding.base import Embedder
 from constellation.fingerprint import fingerprint
 from constellation.storage.base import Storage
 
 
 class Indexer(Protocol):
-    name: ClassVar[str]
+    name: str
+    # True if ``compute`` can run in many worker processes at once. False for
+    # model-based indexers: every worker would load its own copy of the model
+    # (~0.8 GB each), and one GPU process is faster anyway.
+    parallel: bool
 
     @property
     def sample_rate(self) -> int:
@@ -54,6 +59,7 @@ class FingerprintIndexer:
 
     config: FingerprintConfig = field(default_factory=FingerprintConfig)
     name: ClassVar[str] = "fingerprint"
+    parallel: ClassVar[bool] = True
 
     @property
     def sample_rate(self) -> int:
@@ -76,6 +82,58 @@ class FingerprintIndexer:
         storage.delete_fingerprints(song_id)
 
 
-def default_indexers(fp_config: FingerprintConfig | None = None) -> list[Indexer]:
-    """The indexes every song is processed into. Phase 2: add EmbeddingIndexer here."""
-    return [FingerprintIndexer(fp_config or FingerprintConfig())]
+@dataclass(frozen=True)
+class EmbeddingIndexer:
+    """Song-level "sounds like" vector -> ``song_embeddings`` (Phase 2).
+
+    Wraps any :class:`~constellation.embedding.base.Embedder`; the index name
+    includes the model so several embedding models can be indexed side by side.
+    """
+
+    embedder: Embedder
+    parallel: ClassVar[bool] = False
+
+    @property
+    def name(self) -> str:  # type: ignore[override]
+        return f"embedding:{self.embedder.name}"
+
+    @property
+    def sample_rate(self) -> int:
+        return self.embedder.sample_rate
+
+    @property
+    def version(self) -> str:
+        return self.embedder.version
+
+    def compute(self, samples: np.ndarray) -> np.ndarray:
+        return self.embedder.embed_audio(samples)
+
+    def write(self, storage: Storage, song_id: int, payload: np.ndarray) -> int:
+        storage.add_embedding(song_id, self.embedder.name, payload)
+        return 1
+
+    def delete(self, storage: Storage, song_id: int) -> None:
+        storage.delete_embedding(song_id, self.embedder.name)
+
+
+def embeddings_available() -> bool:
+    """True if the optional ``embeddings`` extra (torch + transformers) is installed."""
+    import importlib.util
+
+    return all(importlib.util.find_spec(m) is not None for m in ("torch", "transformers"))
+
+
+def default_indexers(fp_config: FingerprintConfig | None = None, embedder: Embedder | None = None) -> list[Indexer]:
+    """The indexes every song is processed into.
+
+    Fingerprints always; CLAP embeddings when the ``embeddings`` extra is
+    installed (or when an embedder is passed explicitly).
+    """
+    indexers: list[Indexer] = [FingerprintIndexer(fp_config or FingerprintConfig())]
+    if embedder is None and embeddings_available():
+        from constellation.embedding.clap import ClapEmbedder
+
+        embedder = ClapEmbedder()
+    if embedder is not None:
+        indexers.append(EmbeddingIndexer(embedder))
+    return indexers

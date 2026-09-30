@@ -11,6 +11,7 @@ from constellation.api.main import create_app
 from constellation.api.settings import Settings
 from constellation.fingerprint import fingerprint
 from constellation.models import NewSong
+from constellation.pipeline import FingerprintIndexer
 from constellation.storage import MemoryStorage
 
 from conftest import SR, add_white_noise, synth_song
@@ -38,7 +39,7 @@ def client(tmp_path):
         ))
         fp = fingerprint(audio)
         store.add_fingerprints(song.id, fp.hashes, fp.anchor_times)
-    app = create_app(storage=store, settings=Settings(upload_dir=tmp_path / "uploads"))
+    app = create_app(storage=store, settings=Settings(upload_dir=tmp_path / "uploads"), indexers=[FingerprintIndexer()])
     with TestClient(app) as c:
         yield c
 

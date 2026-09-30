@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import struct
 import threading
@@ -27,7 +28,17 @@ _FP_ROW = np.dtype(
     [("n", ">i2"), ("l1", ">i4"), ("hash", ">i4"), ("l2", ">i4"), ("song", ">i4"), ("l3", ">i4"), ("t", ">i4")]
 )
 
-_SONG_COLS = "id, source, source_id, title, artist, album, duration_s, file_path, content_hash, created_at"
+_SONG_COLS = "id, source, source_id, title, artist, album, genre, duration_s, file_path, content_hash, created_at"
+
+
+def _vec_literal(vec: np.ndarray) -> str:
+    """pgvector's text format, '[0.1,0.2,...]'. Text keeps us free of a driver
+    adapter; at ~2 KB per vector the parsing cost is negligible here."""
+    return "[" + ",".join(f"{x:.7g}" for x in np.asarray(vec, np.float32).tolist()) + "]"
+
+
+def _parse_vec(text: str) -> np.ndarray:
+    return np.asarray(json.loads(text), np.float32)
 
 
 def database_url() -> str:
@@ -68,6 +79,8 @@ class PostgresStorage:
             self.dsn, min_size=min_size, max_size=max_size, kwargs={"autocommit": True}, open=True
         )
         self._local = threading.local()
+        # HNSW search breadth: higher = better recall, slower. pgvector's default is 40.
+        self.ef_search = 40
 
     def close(self) -> None:
         self.pool.close()
@@ -128,9 +141,9 @@ class PostgresStorage:
     def add_song(self, song: NewSong) -> Song:
         with self._conn() as conn, conn.cursor(row_factory=dict_row) as cur:
             cur.execute(
-                f"""INSERT INTO songs (source, source_id, title, artist, album, duration_s, file_path, content_hash)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING {_SONG_COLS}""",
-                (song.source, song.source_id, song.title, song.artist, song.album,
+                f"""INSERT INTO songs (source, source_id, title, artist, album, genre, duration_s, file_path, content_hash)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING {_SONG_COLS}""",
+                (song.source, song.source_id, song.title, song.artist, song.album, song.genre,
                  song.duration_s, song.file_path, song.content_hash),
             )
             return Song(**cur.fetchone())
@@ -152,14 +165,20 @@ class PostgresStorage:
         return {s.id: s for s in self._songs_where("WHERE id = ANY(%s)", (list(song_ids),))}
 
     @staticmethod
-    def _search_clause(query: str | None) -> tuple[str, tuple]:
-        """Substring search on title/artist. A sequential scan is fine at ~10^4
-        songs; at larger scale this would get a pg_trgm GIN index."""
-        if not query:
-            return "", ()
-        escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-        pattern = f"%{escaped}%"
-        return "WHERE title ILIKE %s OR artist ILIKE %s", (pattern, pattern)
+    def _search_clause(query: str | None, genre: str | None = None) -> tuple[str, tuple]:
+        """Substring search on title/artist (+ exact genre). A sequential scan is
+        fine at ~10^4 songs; at larger scale this would get a pg_trgm GIN index."""
+        conds: list[str] = []
+        params: list = []
+        if query:
+            escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            pattern = f"%{escaped}%"
+            conds.append("(title ILIKE %s OR artist ILIKE %s)")
+            params += [pattern, pattern]
+        if genre:
+            conds.append("genre = %s")
+            params.append(genre)
+        return ("WHERE " + " AND ".join(conds), tuple(params)) if conds else ("", ())
 
     def list_songs(
         self,
@@ -168,19 +187,39 @@ class PostgresStorage:
         query: str | None = None,
         sort: str = "id",
         descending: bool = False,
+        genre: str | None = None,
     ) -> list[Song]:
         if sort not in SONG_SORT_FIELDS:  # whitelist: the column name is interpolated
             raise ValueError(f"cannot sort by {sort!r}")
-        where, params = self._search_clause(query)
+        where, params = self._search_clause(query, genre)
         col = f"lower({sort})" if sort in ("title", "artist") else sort
         direction = "DESC" if descending else "ASC"
         suffix = f"ORDER BY {col} {direction} NULLS LAST, id LIMIT %s OFFSET %s"
         return self._songs_where(where, (*params, limit, offset), suffix)
 
-    def count_songs(self, query: str | None = None) -> int:
-        where, params = self._search_clause(query)
+    def count_songs(self, query: str | None = None, genre: str | None = None) -> int:
+        where, params = self._search_clause(query, genre)
         with self._conn() as conn:
             return conn.execute(f"SELECT count(*) FROM songs {where}", params).fetchone()[0]
+
+    def set_genres(self, genres: dict[int, str]) -> int:
+        if not genres:
+            return 0
+        with self._conn() as conn:
+            cur = conn.execute(
+                """UPDATE songs SET genre = g.genre
+                   FROM unnest(%s::int[], %s::text[]) AS g(id, genre)
+                   WHERE songs.id = g.id AND songs.genre IS DISTINCT FROM g.genre""",
+                (list(genres.keys()), list(genres.values())),
+            )
+            return cur.rowcount
+
+    def list_genres(self) -> list[tuple[str, int]]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT genre, count(*) FROM songs WHERE genre IS NOT NULL GROUP BY genre ORDER BY 2 DESC, 1"
+            ).fetchall()
+        return [(g, n) for g, n in rows]
 
     def random_song(self) -> Song | None:
         # ORDER BY random() scans the table; fine for ~10^4 songs.
@@ -213,6 +252,62 @@ class PostgresStorage:
             return LookupResult.empty()
         arr = np.asarray(rows, dtype=np.int64)
         return LookupResult(arr[:, 0], arr[:, 1], arr[:, 2])
+
+    # --- EmbeddingStore (pgvector) ---
+    def add_embedding(self, song_id: int, model: str, vec: np.ndarray) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO song_embeddings (song_id, model, vec) VALUES (%s, %s, %s::vector)
+                   ON CONFLICT (song_id, model) DO UPDATE SET vec = EXCLUDED.vec""",
+                (song_id, model, _vec_literal(vec)),
+            )
+
+    def delete_embedding(self, song_id: int, model: str) -> None:
+        with self._conn() as conn:
+            conn.execute("DELETE FROM song_embeddings WHERE song_id = %s AND model = %s", (song_id, model))
+
+    def get_embedding(self, song_id: int, model: str) -> np.ndarray | None:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT vec::text FROM song_embeddings WHERE song_id = %s AND model = %s", (song_id, model)
+            ).fetchone()
+        return _parse_vec(row[0]) if row else None
+
+    def all_embeddings(self, model: str) -> tuple[np.ndarray, np.ndarray]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT song_id, vec::text FROM song_embeddings WHERE model = %s ORDER BY song_id", (model,)
+            ).fetchall()
+        if not rows:
+            return np.empty(0, np.int64), np.empty((0, 0), np.float32)
+        return np.array([r[0] for r in rows], np.int64), np.stack([_parse_vec(r[1]) for r in rows])
+
+    def nearest_embeddings(
+        self, vec: np.ndarray, model: str, k: int, exclude: tuple[int, ...] = ()
+    ) -> list[tuple[int, float]]:
+        """Approximate k-NN via the model's HNSW index.
+
+        The cast ``vec::vector(dim)`` and ``WHERE model = ...`` must match the
+        partial expression index in schema.sql or Postgres falls back to an exact
+        scan. Excluded ids are over-fetched and filtered here rather than in
+        SQL: filtering inside an HNSW scan can return fewer than k rows.
+        """
+        dim = int(np.asarray(vec).size)
+        q = _vec_literal(vec)
+        limit = k + len(exclude)
+        # An HNSW scan returns at most ef_search rows, so a LIMIT above it would
+        # silently come back short (found by the vector-index eval).
+        ef = max(int(self.ef_search), limit)
+        with self._conn() as conn, conn.transaction():
+            conn.execute("SELECT set_config('hnsw.ef_search', %s, true)", (str(ef),))
+            rows = conn.execute(
+                f"""SELECT song_id, 1 - (vec::vector({dim}) <=> %s::vector({dim}))
+                    FROM song_embeddings WHERE model = %s
+                    ORDER BY vec::vector({dim}) <=> %s::vector({dim}) LIMIT %s""",
+                (q, model, q, limit),
+            ).fetchall()
+        skip = set(exclude)
+        return [(int(sid), float(sim)) for sid, sim in rows if sid not in skip][:k]
 
     # --- IndexStatusStore ---
     def get_index_status(self, song_id: int, index_name: str) -> IndexStatus | None:
@@ -247,8 +342,13 @@ class PostgresStorage:
                           pg_relation_size('fingerprints'),
                           pg_indexes_size('fingerprints'),
                           pg_total_relation_size('songs') + pg_total_relation_size('song_indexes'),
+                          (SELECT count(*) FROM song_embeddings),
+                          -- total minus indexes: 2 KB vectors live in the TOAST side table
+                          pg_total_relation_size('song_embeddings') - pg_indexes_size('song_embeddings'),
+                          pg_indexes_size('song_embeddings'),
                           pg_database_size(current_database())"""
             ).fetchone()
         keys = ("songs", "fingerprints", "fingerprints_total_bytes", "fingerprints_table_bytes",
-                "fingerprints_index_bytes", "metadata_bytes", "database_bytes")
+                "fingerprints_index_bytes", "metadata_bytes", "embeddings", "embeddings_table_bytes",
+                "embeddings_index_bytes", "database_bytes")
         return dict(zip(keys, row))

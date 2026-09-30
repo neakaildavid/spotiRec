@@ -18,6 +18,7 @@ class NewSong:
     content_hash: str
     source: str = "fma"
     source_id: str | None = None
+    genre: str | None = None
 
 
 @dataclass(frozen=True)

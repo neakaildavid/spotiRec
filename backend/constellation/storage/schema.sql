@@ -1,5 +1,7 @@
 -- Constellation schema. Idempotent: safe to run repeatedly (`constellation db init`).
 
+CREATE EXTENSION IF NOT EXISTS vector;  -- pgvector, for Phase 2 similarity search
+
 CREATE TABLE IF NOT EXISTS songs (
     id           SERIAL PRIMARY KEY,
     source       TEXT NOT NULL DEFAULT 'upload',
@@ -40,3 +42,25 @@ CREATE INDEX IF NOT EXISTS fingerprints_hash_idx ON fingerprints (hash);
 -- so song_id tracks physical order and a BRIN index (a few KB, storing min/max
 -- per block range) is enough, instead of a B-tree as large as the table's.
 CREATE INDEX IF NOT EXISTS fingerprints_song_brin ON fingerprints USING brin (song_id);
+
+-- ---------------------------------------------------------------- Phase 2
+
+-- Top-level genre (FMA genre_top): shown in the UI and used by the similarity eval.
+ALTER TABLE songs ADD COLUMN IF NOT EXISTS genre TEXT;
+
+-- One "sounds like" vector per (song, model). The model name is part of the key
+-- so embeddings from different models can coexist and be compared.
+CREATE TABLE IF NOT EXISTS song_embeddings (
+    song_id INTEGER NOT NULL REFERENCES songs(id) ON DELETE CASCADE,
+    model   TEXT    NOT NULL,
+    vec     vector  NOT NULL,          -- unit length, so cosine distance == 1 - dot
+    PRIMARY KEY (song_id, model)
+);
+
+-- Approximate nearest-neighbour index (HNSW graph) for cosine distance.
+-- The column is dimension-less so different models can share the table, but
+-- an HNSW index needs a fixed dimension; hence one *partial expression* index
+-- per model. Queries must use the same expression and WHERE clause to hit it.
+CREATE INDEX IF NOT EXISTS song_embeddings_clap_htsat_hnsw ON song_embeddings
+    USING hnsw ((vec::vector(512)) vector_cosine_ops)
+    WHERE model = 'clap-htsat';

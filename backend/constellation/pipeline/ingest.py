@@ -44,6 +44,7 @@ class SongSource:
     album: str | None = None
     source: str = "upload"
     source_id: str | None = None
+    genre: str | None = None
 
 
 class Outcome(str, Enum):
@@ -138,6 +139,7 @@ def commit_song(storage: Storage, plan: _Plan, computed: _Computed) -> IngestRes
                     content_hash=plan.content_hash,
                     source=src.source,
                     source_id=src.source_id,
+                    genre=src.genre,
                 )
             )
         written = []

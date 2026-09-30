@@ -1,7 +1,11 @@
 services:
   db:
-    # Phase 2 can switch to pgvector/pgvector:pg16 for embedding search.
-    image: postgres:16
+    # Official Postgres 16 plus the pgvector extension (Phase 2 similarity search).
+    # The -trixie tag matters: postgres:16 is built on Debian trixie (glibc 2.41),
+    # and text-index sort order comes from glibc. Reusing a volume under the
+    # bookworm-based tag (glibc 2.36) triggers a collation-version mismatch that
+    # can silently corrupt B-tree indexes on text columns.
+    image: pgvector/pgvector:pg16-trixie
     environment:
       POSTGRES_USER: constellation
       POSTGRES_PASSWORD: constellation

@@ -9,7 +9,8 @@ from scipy.io import wavfile
 from constellation.config import FingerprintConfig
 from constellation.fingerprint import fingerprint
 from constellation.matching import match_fingerprint
-from constellation.pipeline import FingerprintIndexer, Outcome, SongSource, ingest_many, process_song
+from constellation.embedding.base import l2_normalize
+from constellation.pipeline import EmbeddingIndexer, FingerprintIndexer, Outcome, SongSource, ingest_many, process_song
 from constellation.storage import MemoryStorage
 
 from conftest import SR, synth_song
@@ -127,3 +128,44 @@ def test_parallel_workers_match_serial(song_files):
     ingest_many(parallel, sources, [FingerprintIndexer()], workers=2)
     by_hash = lambda s: {x.content_hash: s.get_index_status(x.id, "fingerprint").item_count for x in s.list_songs()}
     assert by_hash(serial) == by_hash(parallel)
+
+
+class TinyEmbedder:
+    """Deterministic stand-in for CLAP: spectral-band energies as a 'sound' vector."""
+
+    name = "tiny"
+    dim = 16
+    sample_rate = 11_025
+    version = "tiny-v1"
+
+    def embed_audio(self, samples):
+        spec = np.abs(np.fft.rfft(samples[: 2**15]))
+        bands = np.array_split(spec, self.dim)
+        return l2_normalize(np.array([b.mean() for b in bands], np.float32))
+
+
+def test_embedding_indexer_stores_vectors_and_genre(song_files):
+    store = MemoryStorage()
+    ix = EmbeddingIndexer(TinyEmbedder())
+    assert ix.name == "embedding:tiny" and not ix.parallel
+    sources = [SongSource(p, genre="Rock" if i % 2 else "Folk") for i, p in enumerate(song_files)]
+    counts = ingest_many(store, sources, [FingerprintIndexer(), ix])
+    assert counts[Outcome.INGESTED] == 4
+    assert store.get_song(2).genre == "Rock"
+    assert store.get_index_status(1, "embedding:tiny").item_count == 1
+    v = store.get_embedding(1, "tiny")
+    assert v.shape == (16,) and np.linalg.norm(v) == pytest.approx(1.0, abs=1e-5)
+    hits = store.nearest_embeddings(v, "tiny", 3, exclude=(1,))
+    assert len(hits) == 3 and 1 not in [h[0] for h in hits]
+    assert store.nearest_embeddings(v, "tiny", 1)[0][0] == 1  # itself when not excluded
+
+
+def test_embedding_only_pass_on_fingerprinted_library(song_files):
+    """What `constellation ingest --indexes embedding` does on an existing library."""
+    store = MemoryStorage()
+    sources = [SongSource(p) for p in song_files]
+    ingest_many(store, sources, [FingerprintIndexer()], workers=2)
+    results = []
+    ingest_many(store, sources, [EmbeddingIndexer(TinyEmbedder())], workers=1, on_result=results.append)
+    assert [r.outcome for r in results] == [Outcome.UPDATED] * 4
+    assert len(store.all_embeddings("tiny")[0]) == 4

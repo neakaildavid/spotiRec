@@ -29,6 +29,7 @@ def create_app(
     settings: Settings | None = None,
     fp_config: FingerprintConfig | None = None,
     match_config: MatchConfig | None = None,
+    indexers: list | None = None,
 ) -> FastAPI:
     settings = settings or Settings.from_env()
     fp_config = fp_config or FingerprintConfig()
@@ -60,7 +61,7 @@ def create_app(
     # version is exposed on /health so a mismatch is easy to spot.
     app.state.fp_config = fp_config
     app.state.match_config = match_config or MatchConfig()
-    app.state.indexers = default_indexers(fp_config)
+    app.state.indexers = indexers if indexers is not None else default_indexers(fp_config)
 
     app.add_middleware(
         CORSMiddleware,

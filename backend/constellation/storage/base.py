@@ -55,12 +55,19 @@ class SongStore(Protocol):
         query: str | None = None,
         sort: str = "id",
         descending: bool = False,
+        genre: str | None = None,
     ) -> list[Song]:
         """Page through songs; ``query`` is a case-insensitive substring match on
-        title/artist; ``sort`` is one of ``SONG_SORT_FIELDS``."""
+        title/artist; ``sort`` is one of ``SONG_SORT_FIELDS``; ``genre`` is exact."""
         ...
 
-    def count_songs(self, query: str | None = None) -> int: ...
+    def count_songs(self, query: str | None = None, genre: str | None = None) -> int: ...
+    def set_genres(self, genres: dict[int, str]) -> int:
+        """Set ``genre`` for many songs at once (song_id -> genre); returns rows updated."""
+        ...
+    def list_genres(self) -> list[tuple[str, int]]:
+        """``(genre, song count)`` pairs, most common first."""
+        ...
     def random_song(self) -> Song | None: ...
 
 
@@ -70,12 +77,33 @@ class FingerprintStore(Protocol):
     def lookup(self, hashes: np.ndarray) -> LookupResult: ...
 
 
+class EmbeddingStore(Protocol):
+    """One unit vector per (song, model) plus nearest-neighbour search.
+
+    Kept separate from ``FingerprintStore`` on purpose: the two indexes answer
+    different questions (exact recording vs. similar sound) and could live in
+    different backends (e.g. fingerprints in Redis, vectors in pgvector).
+    """
+
+    def add_embedding(self, song_id: int, model: str, vec: np.ndarray) -> None: ...
+    def delete_embedding(self, song_id: int, model: str) -> None: ...
+    def get_embedding(self, song_id: int, model: str) -> np.ndarray | None: ...
+    def all_embeddings(self, model: str) -> tuple[np.ndarray, np.ndarray]:
+        """``(song_ids, matrix)`` for every stored vector of ``model`` (exact search, eval)."""
+        ...
+    def nearest_embeddings(
+        self, vec: np.ndarray, model: str, k: int, exclude: tuple[int, ...] = ()
+    ) -> list[tuple[int, float]]:
+        """``[(song_id, cosine similarity)]``, most similar first; may be approximate."""
+        ...
+
+
 class IndexStatusStore(Protocol):
     def get_index_status(self, song_id: int, index_name: str) -> IndexStatus | None: ...
     def set_index_status(self, status: IndexStatus) -> None: ...
 
 
-class Storage(SongStore, FingerprintStore, IndexStatusStore, Protocol):
+class Storage(SongStore, FingerprintStore, EmbeddingStore, IndexStatusStore, Protocol):
     """Everything the ingestion pipeline needs, plus a unit of work.
 
     ``transaction()`` groups writes so that a song's fingerprints and its
