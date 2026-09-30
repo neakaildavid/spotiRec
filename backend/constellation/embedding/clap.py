@@ -89,6 +89,15 @@ class ClapEmbedder:
             model = ClapModel.from_pretrained(self.model_id)
         self._model = model.eval().to(self.device)
 
+    def warm_up(self) -> None:
+        """Load the model and run one tiny inference (first GPU calls compile kernels).
+
+        Called in a background thread at API startup so the first user request
+        doesn't pay ~7 s of model loading.
+        """
+        self.embed_text(["music"])
+        self.embed_audio(np.zeros(self.sample_rate, np.float32))
+
     @staticmethod
     def _features(out: Any) -> Any:
         # transformers 5 returns an output object; 4.x returned the tensor itself.

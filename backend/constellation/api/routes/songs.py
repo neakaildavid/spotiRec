@@ -24,13 +24,16 @@ router = APIRouter(prefix="/songs", tags=["songs"])
 def list_songs(
     q: str | None = Query(None, max_length=200, description="Search title or artist"),
     sort: Literal["id", "title", "artist", "duration_s", "created_at"] = "id",
+    genre: str | None = Query(None, max_length=100, description="Exact top-level genre"),
     order: Literal["asc", "desc"] = "asc",
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
     storage: Storage = Depends(get_storage),
 ) -> SongPage:
-    songs = storage.list_songs(limit=limit, offset=offset, query=q, sort=sort, descending=order == "desc")
-    return SongPage(items=[SongOut.from_song(s) for s in songs], total=storage.count_songs(q), limit=limit, offset=offset)
+    songs = storage.list_songs(limit=limit, offset=offset, query=q, sort=sort, descending=order == "desc", genre=genre)
+    return SongPage(
+        items=[SongOut.from_song(s) for s in songs], total=storage.count_songs(q, genre), limit=limit, offset=offset
+    )
 
 
 @router.post("", response_model=IngestResponse, status_code=status.HTTP_201_CREATED,

@@ -4,7 +4,7 @@ Shazam-style music identification (Phase 1) and audio-similarity discovery (Phas
 Record a few seconds of a song, and Constellation tells you what it is and where in the song you are.
 
 > Status: **Phase 1 is complete**: fingerprinting core, Postgres + ingestion CLI, evaluation, HTTP API and web app.
-> **Phase 2** (audio-embedding "Discover similar songs") is in progress: embedders, similarity eval, and pgvector storage + ingestion done.
+> **Phase 2** (audio-embedding "Discover similar songs") is in progress: embedders, similarity eval, pgvector storage + ingestion, and discovery API done.
 
 <p align="center">
   <img src="docs/screenshots/identify-listening.png" width="49%" alt="Listening, with a live frequency halo around the record button" />
@@ -200,6 +200,20 @@ Design notes:
 - **One table, many models.** HNSW needs a fixed dimension, but the `vec` column is dimension-less so different models can share it. Each model gets a *partial expression index*: `USING hnsw ((vec::vector(512)) vector_cosine_ops) WHERE model = 'clap-htsat'`. A test checks the query plan really uses it.
 - **Two-pass ingestion.** CPU-bound fingerprinting fans out over worker processes; the model-based indexer runs in one process on the GPU. Separate workers would each load a 0.6 GB model copy, which doesn't fit in 8 GB of RAM.
 - **`ef_search` is at least the LIMIT.** The eval showed HNSW returns at most `ef_search` rows (recall capped at 90% for `ef_search` 10 with an 11-row query), so the store raises `ef_search` for large *k*.
+**Discovery API** (`discovery.py`, `api/routes/discover.py`):
+
+| Method & path | Purpose |
+|---|---|
+| `GET /songs/{id}/similar?k=10` | Songs that sound like a library song. Uses stored vectors, so no model runs at request time (~4 ms search, ~7 ms over HTTP) |
+| `POST /discover/audio` | Multipart clip → closest-sounding library songs. The fallback when `/identify` says "no match" (unknown song → "here's what it sounds like") |
+| `POST /discover/text` | `{"query": "upbeat electronic with a heavy bassline", "k": 10}` → songs, via CLAP's shared text/audio space |
+| `GET /genres` | Genre counts; `GET /songs` also takes `?genre=` |
+
+- **At most 2 songs per artist.** Raw nearest neighbours are often the rest of the query's album: accurate, but a poor *discovery* list. The query song's own artist counts toward the cap.
+- **The fast identify path is untouched.** `/identify` stays fingerprint-only; embeddings only run for discover calls.
+- **One shared model instance.** The API loads a single `ClapEmbedder`, shared by discovery and `POST /songs` ingestion. It warms up in a background thread at startup, so identify and library requests are served immediately, and repeated text queries hit an LRU cache.
+- **Measured** (warm, M2): a 10 s clip embeds in ~50 ms; a text query in ~30 ms (0 ms when cached). The API's physical memory footprint with CLAP loaded is ~1.5 GB. On an 8 GB machine under swap pressure, the first request after the model has been idle can take 0.5–1.5 s while pages come back.
+
 - **Docker image choice.** The DB image moved to `pgvector/pgvector:pg16-trixie`. The plain `pg16` tag is built on Debian bookworm (glibc 2.36), while the original `postgres:16` volume was created on trixie (glibc 2.41). Postgres warned of a collation-version mismatch, which can silently corrupt text B-tree indexes such as the `content_hash` idempotency key. Matching the OS avoids it.
 
 ## Setup

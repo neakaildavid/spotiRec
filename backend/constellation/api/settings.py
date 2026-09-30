@@ -22,6 +22,8 @@ class Settings:
     # latency without improving accuracy (10 s clips already score ~99%).
     max_query_seconds: float = 20.0
     min_query_seconds: float = 1.0
+    # Discovery clips: CLAP embeds 10 s windows, so 30 s = 3 windows (~0.25 s on an M2).
+    max_discover_seconds: float = 30.0
 
     @classmethod
     def from_env(cls) -> "Settings":
