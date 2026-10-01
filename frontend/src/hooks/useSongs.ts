@@ -8,7 +8,7 @@ const PAGE = 60;
  * aborts any in-flight request, so a slow response for an old search can never
  * overwrite a newer one.
  */
-export function useSongs(q: string, sort: SortField, order: SortOrder) {
+export function useSongs(q: string, sort: SortField, order: SortOrder, genre = "") {
   const [items, setItems] = useState<Song[]>([]);
   const [total, setTotal] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
@@ -24,7 +24,7 @@ export function useSongs(q: string, sort: SortField, order: SortOrder) {
       setLoading(true);
       setError(null);
       try {
-        const page = await listSongs({ q: q || undefined, sort, order, limit: PAGE, offset }, ctrl.signal);
+        const page = await listSongs({ q: q || undefined, sort, order, limit: PAGE, offset, genre: genre || undefined }, ctrl.signal);
         setItems((prev) => (offset === 0 ? page.items : [...prev, ...page.items]));
         setTotal(page.total);
       } catch (e) {
@@ -33,7 +33,7 @@ export function useSongs(q: string, sort: SortField, order: SortOrder) {
         if (abortRef.current === ctrl) setLoading(false);
       }
     },
-    [q, sort, order],
+    [q, sort, order, genre],
   );
 
   useEffect(() => {

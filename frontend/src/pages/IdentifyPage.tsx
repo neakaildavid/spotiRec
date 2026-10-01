@@ -1,10 +1,12 @@
-import { CircleAlert, Shuffle, Upload } from "lucide-react";
+import { ArrowRight, CircleAlert, Shuffle, Upload } from "lucide-react";
 import { useCallback, useRef, useState } from "react";
+import { Link } from "react-router";
 import { ConstellationViz, type VizPeak } from "../components/ConstellationViz";
 import { RecordButton, type RecordState } from "../components/RecordButton";
 import { NoMatchCard, ResultCard, ResultCardSkeleton } from "../components/ResultCard";
+import { SimilarRow } from "../components/SimilarRow";
 import { useRecorder, type CapturedPeak } from "../hooks/useRecorder";
-import { identify, randomSong, type IdentifyResult, type Song } from "../lib/api";
+import { discoverByAudio, identify, randomSong, similarSongs, type IdentifyResult, type Song } from "../lib/api";
 import { songArtist, songTitle } from "../lib/format";
 import { usePlayer } from "../player/PlayerContext";
 
@@ -24,12 +26,16 @@ export function IdentifyPage() {
   const [nowPlayingHint, setNowPlayingHint] = useState<Song | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  // The last clip is kept so a "no match" can still be answered with
+  // "it sounds like…" (embedding search) without recording again.
+  const lastClip = useRef<{ blob: Blob; filename: string; id: number } | null>(null);
   const player = usePlayer();
 
   const run = useCallback(async (blob: Blob, filename: string, peaks: VizPeak[], duration: number) => {
     abortRef.current?.abort();
     const ctrl = new AbortController();
     abortRef.current = ctrl;
+    lastClip.current = { blob, filename, id: (lastClip.current?.id ?? 0) + 1 };
     setPhase({ kind: "matching", peaks, duration });
     try {
       const [result] = await Promise.all([identify(blob, filename, ctrl.signal), sleep(MIN_MATCHING_MS)]);
@@ -169,6 +175,28 @@ export function IdentifyPage() {
           ) : (
             <NoMatchCard result={result} onReset={reset} />
           )}
+          <div className="py-4">
+            {result.match && result.song ? (
+              <SimilarRow
+                title="Sounds similar"
+                subtitle={<>Songs that sound like <span className="text-fg">{songTitle(result.song)}</span></>}
+                loadKey={`similar:${result.song.id}`}
+                load={(s) => similarSongs(result.song!.id, 12, s)}
+                action={
+                  <Link to={`/discover?song=${result.song.id}`} className="inline-flex items-center gap-1 text-sm font-semibold text-muted hover:text-fg">
+                    See all <ArrowRight className="size-4" aria-hidden="true" />
+                  </Link>
+                }
+              />
+            ) : lastClip.current ? (
+              <SimilarRow
+                title="Not in the library, but it sounds like…"
+                subtitle="Closest songs by overall sound: similar style, not the same recording."
+                loadKey={`clip:${lastClip.current.id}`}
+                load={(s) => discoverByAudio(lastClip.current!.blob, lastClip.current!.filename, 12, s)}
+              />
+            ) : null}
+          </div>
           <HowItMatched result={result} />
         </div>
       )}

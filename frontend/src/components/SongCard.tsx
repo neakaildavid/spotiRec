@@ -1,4 +1,4 @@
-import { Pause, Play } from "lucide-react";
+import { Pause, Play, Sparkles } from "lucide-react";
 import { memo } from "react";
 import type { Song } from "../lib/api";
 import { songArtist, songTitle } from "../lib/format";
@@ -7,22 +7,29 @@ import { CoverArt } from "./CoverArt";
 
 interface Props {
   song: Song;
-  /** Optional line under the artist (e.g. "92% similar" in Phase 2's Discover row). */
+  /** Optional line under the artist (e.g. the genre). */
   caption?: string;
+  /** Tooltip on the card, e.g. the raw similarity score. */
+  hint?: string;
+  /** Shows a "More like this" button that calls this. */
+  onMoreLike?: (song: Song) => void;
 }
 
 /**
- * Square cover card. The whole card is one button (play/pause) so there's a
- * single, large tap target and no nested interactive elements; the round play
- * badge is decorative and appears on hover/focus (always on touch screens).
+ * Square cover card. The card body is one button (play/pause): a single large
+ * tap target. The round play badge is decorative and appears on hover/focus
+ * (always on touch screens). "More like this" is a *sibling* button laid over
+ * the cover, not a nested one, so the markup stays valid and each control is
+ * separately focusable.
  */
-export const SongCard = memo(function SongCard({ song, caption }: Props) {
+export const SongCard = memo(function SongCard({ song, caption, hint, onMoreLike }: Props) {
   const player = usePlayer();
   const isCurrent = player.song?.id === song.id;
   const isPlaying = isCurrent && player.playing;
   const title = songTitle(song);
 
   return (
+    <div className="group/card relative" title={hint}>
     <button
       type="button"
       onClick={() => (isCurrent ? player.toggle() : player.play(song))}
@@ -44,5 +51,17 @@ export const SongCard = memo(function SongCard({ song, caption }: Props) {
       <p className="truncate text-sm text-muted">{songArtist(song)}</p>
       {caption && <p className="mt-0.5 truncate text-xs text-subtle">{caption}</p>}
     </button>
+    {onMoreLike && (
+      <button
+        type="button"
+        onClick={() => onMoreLike(song)}
+        aria-label={`More like ${title}`}
+        title="More like this"
+        className="absolute top-5 right-5 grid size-8 place-items-center rounded-full bg-bg/70 text-fg opacity-0 backdrop-blur transition duration-150 group-hover/card:opacity-100 hover:bg-bg hover:text-accent focus-visible:opacity-100 pointer-coarse:opacity-100"
+      >
+        <Sparkles className="size-4" />
+      </button>
+    )}
+    </div>
   );
 });

@@ -1,5 +1,6 @@
-import { Pause, Play, RotateCcw, RotateCw, Volume1, Volume2, VolumeX } from "lucide-react";
+import { Pause, Play, RotateCcw, RotateCw, Sparkles, Volume1, Volume2, VolumeX } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { useNavigate } from "react-router";
 import { formatTime, songArtist, songTitle } from "../lib/format";
 import { usePlayer, usePlayerTime } from "../player/PlayerContext";
 import { CoverArt } from "./CoverArt";
@@ -12,6 +13,7 @@ import { CoverArt } from "./CoverArt";
 export function PlayerBar() {
   const player = usePlayer();
   const { song, playing, buffering, toggle } = player;
+  const navigate = useNavigate();
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -40,6 +42,15 @@ export function PlayerBar() {
                 <p className="truncate text-sm font-semibold">{songTitle(song)}</p>
                 <p className="truncate text-xs text-muted">{songArtist(song)}</p>
               </div>
+              <button
+                type="button"
+                onClick={() => navigate(`/discover?song=${song.id}`)}
+                aria-label="More like this"
+                title="More like this"
+                className="hidden size-8 shrink-0 place-items-center rounded-full text-muted transition-colors hover:text-accent md:grid"
+              >
+                <Sparkles className="size-4" />
+              </button>
             </>
           ) : (
             <p className="truncate text-sm text-subtle">Nothing playing. Identify a song or pick one from the library.</p>

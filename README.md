@@ -3,8 +3,9 @@
 Shazam-style music identification (Phase 1) and audio-similarity discovery (Phase 2, planned).
 Record a few seconds of a song, and Constellation tells you what it is and where in the song you are.
 
-> Status: **Phase 1 is complete**: fingerprinting core, Postgres + ingestion CLI, evaluation, HTTP API and web app.
-> **Phase 2** (audio-embedding "Discover similar songs") is in progress: embedders, similarity eval, pgvector storage + ingestion, and discovery API done.
+> Status: **Phases 1 and 2 are complete.**
+> Phase 1 is Shazam-style identification: fingerprinting, Postgres, ingestion CLI, evaluation, HTTP API and web app.
+> Phase 2 is "Discover": CLAP audio embeddings, pgvector search, text-to-music search, and similar-song recommendations.
 
 <p align="center">
   <img src="docs/screenshots/identify-listening.png" width="49%" alt="Listening, with a live frequency halo around the record button" />
@@ -165,10 +166,15 @@ Design notes:
 - **Generated covers.** FMA lacks reliable album art, so each song gets a deterministic SVG cover from its id: a seeded PRNG picks one of 10 curated palettes and 4 compositions. Same song, same cover, everywhere, with zero storage or requests.
 - **Two player contexts.** Playback time updates every frame, so it lives in its own context. The dozens of `SongCard`s and `TrackRow`s subscribe only to "which song, playing or not", and don't re-render 60× per second.
 - **Seeking via HTTP Range.** "Play from 1:23" sets `currentTime` after metadata loads. The API's Range support means the browser fetches from the offset instead of downloading the whole file.
-- **Reusable pieces for Phase 2.** `SongCard` (with an optional `caption`, e.g. "92% similar"), `TrackRow`, `PlayerBar`, `RecordButton`, `CoverArt` and `ConstellationViz` are standalone components. The Discover nav item is already stubbed.
+- **Reusable components.** `SongCard`, `TrackRow`, `PlayerBar`, `RecordButton`, `CoverArt` and `ConstellationViz` are standalone; Phase 2's Discover page and similar-song rows reuse them unchanged.
 - **Verified end to end in headless Chrome**, driven with a WAV file as a fake microphone: record → WebM/Opus upload → correct match at the right offset. The same run covered the upload flow, library views, mobile layout and reduced motion, with no console errors.
 
-## Phase 2: similar-sounding songs (in progress)
+## Phase 2: similar-sounding songs
+
+<p align="center">
+  <img src="docs/screenshots/discover-text.png" width="49%" alt="Discover: text search for 'mellow acoustic guitar with soft vocals'" />
+  <img src="docs/screenshots/nomatch-sounds-like.png" width="49%" alt="No match, followed by songs that sound like the clip" />
+</p>
 
 Fingerprints only match *the same recording*. Phase 2 adds a second index of **CLAP** audio embeddings (`embedding/clap.py`). CLAP maps audio and text into one 512-d space, so a single model gives both "songs that sound like this" and "describe a sound" text search. Each song vector is the normalized mean of its 10 s window embeddings.
 
@@ -213,6 +219,14 @@ Design notes:
 - **The fast identify path is untouched.** `/identify` stays fingerprint-only; embeddings only run for discover calls.
 - **One shared model instance.** The API loads a single `ClapEmbedder`, shared by discovery and `POST /songs` ingestion. It warms up in a background thread at startup, so identify and library requests are served immediately, and repeated text queries hit an LRU cache.
 - **Measured** (warm, M2): a 10 s clip embeds in ~50 ms; a text query in ~30 ms (0 ms when cached). The API's physical memory footprint with CLAP loaded is ~1.5 GB. On an 8 GB machine under swap pressure, the first request after the model has been idle can take 0.5–1.5 s while pages come back.
+
+**In the web app:**
+- **Discover page** (`/discover`). Text search with example prompts, genre browsing, and "songs that sound like X". All state lives in the URL (`?q=`, `?song=`, `?genre=`), so results are shareable and Back works.
+- **"Sounds similar" row** under every identified song.
+- **"Not in the library, but it sounds like…"** row on a no-match. It reuses the same recording through `/discover/audio`, so the user never hits a dead end.
+- **"More like this"** on library cards, similar-song cards and the player bar. Genre chips filter the library.
+- **Genre captions, not "% similar".** Cosine similarity isn't a calibrated percentage: song-to-song neighbours score ~0.92, unknown clips ~0.80, text queries far lower. "93% similar" would mislead, so cards show the genre and the raw score sits in a tooltip.
+- **A routing bug caught in the browser test.** The dev proxy forwarded the `/discover` *page* to the API (whose endpoints live under `/discover/…`) and the app got a 404 JSON. The proxy now matches `/discover/` only.
 
 - **Docker image choice.** The DB image moved to `pgvector/pgvector:pg16-trixie`. The plain `pg16` tag is built on Debian bookworm (glibc 2.36), while the original `postgres:16` volume was created on trixie (glibc 2.41). Postgres warned of a collation-version mismatch, which can silently corrupt text B-tree indexes such as the `content_hash` idempotency key. Matching the OS avoids it.
 

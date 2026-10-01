@@ -14,7 +14,7 @@ interface NavItem {
 const NAV: NavItem[] = [
   { to: "/", label: "Identify", icon: AudioLines },
   { to: "/library", label: "Library", icon: Library },
-  { to: "/discover", label: "Discover", icon: Compass, soon: true }, // Phase 2
+  { to: "/discover", label: "Discover", icon: Compass },
 ];
 
 /** Desktop left sidebar. */

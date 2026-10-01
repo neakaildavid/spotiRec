@@ -10,6 +10,7 @@ export interface Song {
   title: string | null;
   artist: string | null;
   album: string | null;
+  genre: string | null;
   duration_s: number;
   source: string;
   source_id: string | null;
@@ -33,6 +34,24 @@ export interface IdentifyResult {
   runner_up_matches: number;
   query: { duration_s: number; hashes: number; peaks: [number, number][] };
   timing: { decode_ms: number; fingerprint_ms: number; match_ms: number; total_ms: number };
+}
+
+export interface SimilarItem {
+  song: Song;
+  /** Cosine similarity of CLAP embeddings. Comparable within one list, not a calibrated percentage. */
+  score: number;
+}
+
+export interface DiscoverResult {
+  items: SimilarItem[];
+  model: string;
+  embed_ms: number;
+  search_ms: number;
+}
+
+export interface GenreCount {
+  genre: string;
+  songs: number;
 }
 
 export type SortField = "id" | "title" | "artist" | "duration_s";
@@ -78,7 +97,7 @@ export function identify(blob: Blob, filename: string, signal?: AbortSignal): Pr
 }
 
 export function listSongs(
-  params: { q?: string; sort?: SortField; order?: SortOrder; limit?: number; offset?: number },
+  params: { q?: string; sort?: SortField; order?: SortOrder; limit?: number; offset?: number; genre?: string },
   signal?: AbortSignal,
 ): Promise<SongPage> {
   const qs = new URLSearchParams();
@@ -92,4 +111,34 @@ export function randomSong(): Promise<Song> {
 
 export function health(): Promise<{ status: string; songs: number; fingerprint_version: string }> {
   return request("/health");
+}
+
+export function getSong(id: number, signal?: AbortSignal): Promise<Song> {
+  return request(`/songs/${id}`, { signal });
+}
+
+/** Songs that sound like a library song (precomputed vectors; fast). */
+export function similarSongs(id: number, k = 12, signal?: AbortSignal): Promise<DiscoverResult> {
+  return request(`/songs/${id}/similar?k=${k}`, { signal });
+}
+
+/** Library songs that sound like an arbitrary clip (e.g. one identify couldn't match). */
+export function discoverByAudio(blob: Blob, filename: string, k = 12, signal?: AbortSignal): Promise<DiscoverResult> {
+  const form = new FormData();
+  form.append("file", blob, filename);
+  return request(`/discover/audio?k=${k}`, { method: "POST", body: form, signal });
+}
+
+/** Text -> music search through CLAP's shared text/audio space. */
+export function discoverByText(query: string, k = 24, signal?: AbortSignal): Promise<DiscoverResult> {
+  return request("/discover/text", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ query, k }),
+    signal,
+  });
+}
+
+export function listGenres(signal?: AbortSignal): Promise<GenreCount[]> {
+  return request("/genres", { signal });
 }

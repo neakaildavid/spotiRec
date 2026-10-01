@@ -1,6 +1,7 @@
 import { BrowserRouter, Route, Routes } from "react-router";
 import { MobileTabBar, Sidebar } from "./components/Navigation";
 import { PlayerBar } from "./components/PlayerBar";
+import { DiscoverPage } from "./pages/DiscoverPage";
 import { IdentifyPage } from "./pages/IdentifyPage";
 import { LibraryPage } from "./pages/LibraryPage";
 import { PlayerProvider } from "./player/PlayerContext";
@@ -21,6 +22,7 @@ export function App() {
               <Routes>
                 <Route path="/" element={<IdentifyPage />} />
                 <Route path="/library" element={<LibraryPage />} />
+                <Route path="/discover" element={<DiscoverPage />} />
                 <Route path="*" element={<IdentifyPage />} />
               </Routes>
             </main>

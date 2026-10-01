@@ -1,10 +1,13 @@
 import { CircleAlert, LayoutGrid, List, Search, SearchX } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { useNavigate } from "react-router";
+import { GenreChip } from "../components/GenreChip";
 import { SongCard } from "../components/SongCard";
 import { SongCardSkeleton, TrackRowSkeleton } from "../components/Skeleton";
 import { TrackListHeader, TrackRow } from "../components/TrackRow";
+import { useAsync } from "../hooks/useAsync";
 import { useDebounced, useSongs } from "../hooks/useSongs";
-import type { SortField, SortOrder } from "../lib/api";
+import { listGenres, type SortField, type SortOrder } from "../lib/api";
 
 type View = "grid" | "list";
 const VIEW_KEY = "constellation.libraryView";
@@ -29,8 +32,11 @@ export function LibraryPage() {
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState<SortField>("id");
   const [order, setOrder] = useState<SortOrder>("desc");
+  const [genre, setGenre] = useState("");
   const q = useDebounced(query.trim(), 250);
-  const { items, total, loading, error, hasMore, loadMore, retry } = useSongs(q, sort, order);
+  const { items, total, loading, error, hasMore, loadMore, retry } = useSongs(q, sort, order, genre);
+  const genres = useAsync((s) => listGenres(s), "genres");
+  const navigate = useNavigate();
 
   useEffect(() => {
     try {
@@ -66,7 +72,7 @@ export function LibraryPage() {
         <div>
           <h1 className="text-4xl font-black tracking-tight md:text-5xl">Library</h1>
           <p className="mt-1 text-muted tabular-nums">
-            {total === null ? " " : `${total.toLocaleString()} ${q ? "matching " : ""}tracks`}
+            {total === null ? " " : `${total.toLocaleString()} ${q || genre ? "matching " : ""}tracks`}
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -121,16 +127,27 @@ export function LibraryPage() {
         </div>
       </header>
 
+      {genres.data && genres.data.length > 0 && (
+        <div className="-mx-1 mt-6 flex gap-2 overflow-x-auto px-1 pb-1 [scrollbar-width:none]" role="group" aria-label="Filter by genre">
+          <GenreChip label="All" active={!genre} onClick={() => setGenre("")} />
+          {genres.data.map((g) => (
+            <GenreChip key={g.genre} label={g.genre} active={genre === g.genre} onClick={() => setGenre(genre === g.genre ? "" : g.genre)} />
+          ))}
+        </div>
+      )}
+
       <div className="mt-8">
         {error && items.length === 0 ? (
           <EmptyState icon={<CircleAlert className="size-8" />} title="Couldn't load the library" body={error}>
             <button type="button" onClick={retry} className="mt-4 rounded-full bg-fg px-5 py-2 text-sm font-bold text-bg">Retry</button>
           </EmptyState>
         ) : !initialLoading && items.length === 0 ? (
-          <EmptyState icon={<SearchX className="size-8" />} title={`No tracks match "${q}"`} body="Try a different title or artist." />
+          <EmptyState icon={<SearchX className="size-8" />} title={q ? `No tracks match "${q}"` : "No tracks here yet"} body="Try a different title or artist." />
         ) : view === "grid" ? (
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:gap-4 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">
-            {items.map((s) => <SongCard key={s.id} song={s} />)}
+            {items.map((s) => (
+              <SongCard key={s.id} song={s} caption={s.genre ?? undefined} onMoreLike={(x) => navigate(`/discover?song=${x.id}`)} />
+            ))}
             {loading && Array.from({ length: initialLoading ? 12 : 6 }, (_, i) => <SongCardSkeleton key={`sk${i}`} />)}
           </div>
         ) : (
